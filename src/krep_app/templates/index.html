@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Расчёт параметров крепления выработок</title>
+<style>
+  :root{--bg:#0f172a;--card:#ffffff;--line:#e2e8f0;--ink:#1e293b;--muted:#64748b;
+        --accent:#2563eb;--accent2:#1d4ed8;--ok:#16a34a;--bad:#dc2626;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI",system-ui,Arial,sans-serif;color:var(--ink);
+       background:linear-gradient(160deg,#1e293b,#0f172a);min-height:100vh;padding:24px}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{color:#f1f5f9;font-size:22px;margin:0 0 4px}
+  .sub{color:#94a3b8;font-size:13px;margin:0 0 20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+        padding:18px 20px;margin-bottom:16px;box-shadow:0 8px 24px rgba(0,0,0,.18)}
+  .card h2{font-size:15px;margin:0 0 14px;display:flex;align-items:center;gap:8px}
+  .num{display:inline-flex;width:24px;height:24px;border-radius:50%;background:var(--accent);
+       color:#fff;align-items:center;justify-content:center;font-size:13px;font-weight:700}
+  label{font-size:13px;color:var(--muted);display:block;margin:0 0 4px}
+  .row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+  .row > div{flex:1;min-width:170px}
+  input,select{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;
+               font-size:14px;background:#fff;color:var(--ink)}
+  input[type=file]{padding:6px}
+  button{cursor:pointer;border:0;border-radius:8px;padding:10px 16px;font-size:14px;
+         font-weight:600;background:var(--accent);color:#fff;transition:.15s}
+  button:hover{background:var(--accent2)}
+  button.sec{background:#f1f5f9;color:var(--ink);border:1px solid var(--line)}
+  button.sec:hover{background:#e2e8f0}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .map-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .hint{color:var(--muted);font-size:12px;margin:0 0 10px}
+  #log{background:#0b1220;color:#cbd5e1;border-radius:8px;padding:10px 12px;font-family:
+       Consolas,monospace;font-size:12px;white-space:pre-wrap;max-height:150px;overflow:auto}
+  table{border-collapse:collapse;width:100%;font-size:12px}
+  th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;max-width:220px;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  th{background:#f8fafc;position:sticky;top:0}
+  .tbl-wrap{overflow:auto;max-height:280px;border:1px solid var(--line);border-radius:8px}
+  .pill{font-size:11px;color:var(--ok);font-weight:600}
+  .csv-only{display:flex;gap:12px;margin-top:10px}
+  .big{width:100%;padding:13px;font-size:15px;margin-top:4px}
+  .err{color:var(--bad);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Расчёт параметров крепления горных выработок</h1>
+  <p class="sub">Загрузите данные о выработках, сопоставьте столбцы и выгрузите результат в Excel.</p>
+
+  <!-- 1. ВХОД -->
+  <div class="card">
+    <h2><span class="num">1</span> Входной файл</h2>
+    <div class="row">
+      <div>
+        <label>Формат (расширение)</label>
+        <select id="fmt">
+          <option value="csv">CSV (*.csv)</option>
+          <option value="excel">Excel (*.xlsx, *.xls)</option>
+          <option value="json">JSON (*.json)</option>
+        </select>
+      </div>
+      <div style="flex:2">
+        <label>Файл</label>
+        <input type="file" id="file">
+      </div>
+    </div>
+    <div class="csv-only" id="csvOpts">
+      <div><label>Разделитель</label>
+        <select id="sep"><option>,</option><option>;</option><option>&#9;</option><option>|</option></select></div>
+      <div><label>Кодировка</label>
+        <select id="enc"><option>utf-8</option><option>cp1251</option><option>utf-8-sig</option></select></div>
+    </div>
+    <div style="margin-top:12px">
+      <button id="loadBtn">Загрузить и прочитать столбцы</button>
+      <span id="loadInfo" class="pill"></span>
+    </div>
+  </div>
+
+  <!-- 2. СОПОСТАВЛЕНИЕ -->
+  <div class="card">
+    <h2><span class="num">2</span> Сопоставление столбцов</h2>
+    <p class="hint">Укажите, какой столбец входного файла соответствует каждому требуемому полю.</p>
+    <div class="map-grid" id="mapGrid">
+      <div><label>Название выработки</label><select id="m_name" disabled></select></div>
+      <div><label>Назначение (тип)</label><select id="m_purpose" disabled></select></div>
+      <div><label>Категория нарушенности</label><select id="m_category" disabled></select></div>
+      <div><label>Ширина выработки, м</label><select id="m_width" disabled></select></div>
+    </div>
+  </div>
+
+  <!-- 3. ВЫХОД -->
+  <div class="card">
+    <h2><span class="num">3</span> Выходной файл Excel</h2>
+    <div class="row">
+      <div style="flex:2">
+        <label>Имя файла для сохранения</label>
+        <input type="text" id="outName" value="результат_крепления.xlsx">
+      </div>
+    </div>
+    <p class="hint">Файл скачается браузером в папку загрузок.</p>
+    <button id="runBtn" class="big" disabled>▶ Обработать и скачать Excel</button>
+    <p id="err" class="err"></p>
+  </div>
+
+  <!-- ПРЕДПРОСМОТР / ЛОГ -->
+  <div class="card">
+    <h2>Предпросмотр данных</h2>
+    <div class="tbl-wrap"><table id="prev"></table></div>
+    <div style="margin-top:12px"><div id="log">Готов к работе.</div></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let TOKEN = null;
+
+function logln(t){ const l=$('log'); l.textContent += "\n"+t; l.scrollTop=l.scrollHeight; }
+function setErr(t){ $('err').textContent = t||''; }
+
+$('fmt').addEventListener('change', ()=>{
+  $('csvOpts').style.display = $('fmt').value==='csv' ? 'flex' : 'none';
+});
+
+$('loadBtn').addEventListener('click', async ()=>{
+  setErr('');
+  const f = $('file').files[0];
+  if(!f){ setErr('Выберите файл.'); return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('fmt', $('fmt').value);
+  fd.append('sep', $('sep').value);
+  fd.append('enc', $('enc').value);
+  $('loadBtn').disabled = true; $('loadInfo').textContent='загрузка…';
+  try{
+    const r = await fetch('/upload', {method:'POST', body:fd});
+    const d = await r.json();
+    if(!r.ok){ throw new Error(d.error||'Ошибка загрузки'); }
+    TOKEN = d.token;
+    fillMappings(d.columns, d.auto||{});
+    fillPreview(d.columns, d.preview);
+    $('runBtn').disabled = false;
+    $('loadInfo').textContent = '✓ строк: '+d.nrows+', столбцов: '+d.columns.length;
+    logln('Файл загружен: '+f.name+' — строк '+d.nrows+', столбцов '+d.columns.length);
+    logln('Столбцы: '+d.columns.join(', '));
+  }catch(e){ setErr(e.message); logln('[ОШИБКА] '+e.message); }
+  finally{ $('loadBtn').disabled = false; }
+});
+
+function fillMappings(cols, auto){
+  ['name','purpose','category','width'].forEach(k=>{
+    const sel = $('m_'+k); sel.innerHTML=''; sel.disabled=false;
+    const empty=document.createElement('option'); empty.value=''; empty.textContent='— выберите столбец —';
+    sel.appendChild(empty);
+    cols.forEach(c=>{ const o=document.createElement('option'); o.value=c; o.textContent=c; sel.appendChild(o); });
+    if(auto[k]) sel.value = auto[k];
+  });
+}
+
+function fillPreview(cols, rows){
+  const t = $('prev'); t.innerHTML='';
+  const thead=document.createElement('tr');
+  cols.forEach(c=>{ const th=document.createElement('th'); th.textContent=c; thead.appendChild(th); });
+  t.appendChild(thead);
+  rows.forEach(r=>{ const tr=document.createElement('tr');
+    r.forEach(v=>{ const td=document.createElement('td'); td.textContent=v; td.title=v; tr.appendChild(td); });
+    t.appendChild(tr); });
+}
+
+$('runBtn').addEventListener('click', async ()=>{
+  setErr('');
+  const mapping = {
+    name:$('m_name').value, purpose:$('m_purpose').value,
+    category:$('m_category').value, width:$('m_width').value
+  };
+  for(const k in mapping){ if(!mapping[k]){ setErr('Сопоставьте все четыре поля.'); return; } }
+  $('runBtn').disabled = true;
+  try{
+    const r = await fetch('/process', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({token:TOKEN, mapping, filename:$('outName').value})
+    });
+    if(!r.ok){ const d=await r.json(); throw new Error(d.error||'Ошибка обработки'); }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href=url; a.download = $('outName').value || 'результат_крепления.xlsx';
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    logln('Готово. Файл сформирован и скачан: '+a.download);
+  }catch(e){ setErr(e.message); logln('[ОШИБКА] '+e.message); }
+  finally{ $('runBtn').disabled = false; }
+});
+</script>
+</body>
+</html>

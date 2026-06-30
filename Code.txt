@@ -1,0 +1,639 @@
+# -*- coding: utf-8 -*-
+"""
+Расчёт параметров крепления горных выработок — браузерное приложение.
+
+Запускается как локальный веб-сервер и автоматически открывает браузер.
+Подходит для упаковки в один .exe через PyInstaller (см. build_exe.bat / krep_app.spec).
+
+Возможности:
+  * загрузка входного файла с выбором расширения (CSV / Excel / JSON);
+  * сопоставление столбцов входных данных с требуемыми полями
+    (name, purpose, category, width);
+  * выгрузка результата в Excel (.xlsx). В итоговой таблице добавлен
+    столбец «Категория» из исходного датафрейма.
+
+Запуск из исходника:  python krep_app.py
+"""
+
+import io
+import os
+import sys
+import socket
+import threading
+import webbrowser
+
+import pandas as pd
+from flask import Flask, request, jsonify, send_file, Response
+
+# ---------------------------------------------------------------------------
+#  СПРАВОЧНЫЕ ДАННЫЕ
+# ---------------------------------------------------------------------------
+
+data_mesh = [
+    {'category': '1а', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 1.8},
+    {'category': '1а', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 1.8},
+    {'category': '1а', 'purpose': 'Нарезные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 1.8},
+    {'category': '1а', 'purpose': 'Горно‑капитальные',      
+     'width_range_min': 5, 'width_range_max': 8, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 2.1},
+    {'category': '1а', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 5, 'width_range_max': 8, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 2.1},
+    {'category': '1а', 'purpose': 'Нарезные',
+     'width_range_min': 5, 'width_range_max': 8, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 2.1}, 
+    
+    {'category': '1б', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 1.8},
+    {'category': '1б', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 1.8},
+    {'category': '1б', 'purpose': 'Нарезные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 1.8},
+    {'category': '1б', 'purpose': 'Горно‑капитальные',      
+     'width_range_min': 5, 'width_range_max': 8, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 2.1},
+    {'category': '1б', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 5, 'width_range_max': 8, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 2.1},
+    {'category': '1б', 'purpose': 'Нарезные',
+     'width_range_min': 5, 'width_range_max': 8, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 2.1},
+
+    
+    {'category': '2а', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 2.1},
+    
+    {'category': '2б', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 1.0, 'mesh_spacing_b': 1.0, 'anchoring_depth': 2.1},
+    
+    {'category': '2а', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 5.0, 'width_range_max': 7.0, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 2.1},
+    
+    {'category': '2б', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 5.0, 'width_range_max': 7.0, 'mesh_spacing_a': 1.0, 'mesh_spacing_b': 1.0, 'anchoring_depth': 2.1},
+      
+   
+    {'category': '2а', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 1.8},
+    {'category': '2б', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 1.0, 'mesh_spacing_b': 1.0, 'anchoring_depth': 1.8},
+    
+    
+    {'category': '2а', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 5.0, 'width_range_max': 7.0, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 2.1},
+    {'category': '2б', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 5.0, 'width_range_max': 7.0, 'mesh_spacing_a': 1.0, 'mesh_spacing_b': 1.0, 'anchoring_depth': 2.1},
+    
+    
+    {'category': '2а', 'purpose': 'Нарезные',
+     'width_range_min': 3.5, 'width_range_max': 5.9, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 1.8},
+    {'category': '2б', 'purpose': 'Нарезные',
+     'width_range_min': 3.5, 'width_range_max': 5.9, 'mesh_spacing_a': 1.0, 'mesh_spacing_b': 1.0, 'anchoring_depth': 1.8},    
+    
+    
+    {'category': '2а', 'purpose': 'Нарезные',
+     'width_range_min': 6.0, 'width_range_max': 8.0, 'mesh_spacing_a': 1.1, 'mesh_spacing_b': 1.1, 'anchoring_depth': 2.1},
+    {'category': '2б', 'purpose': 'Нарезные',
+     'width_range_min': 6.0, 'width_range_max': 8.0, 'mesh_spacing_a': 1.0, 'mesh_spacing_b': 1.0, 'anchoring_depth': 2.1},
+    
+    
+    {'category': '3а', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.3},
+    {'category': '3б', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.3},
+    
+    
+    {'category': '3а', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 5.0, 'width_range_max': 7.0, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.3},
+    {'category': '3б', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 5.0, 'width_range_max': 7.0, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.3},
+     
+    
+    {'category': '3а', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.1},
+    {'category': '3б', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 3.5, 'width_range_max': 4.9, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.1},
+    
+    {'category': '3а', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 5.0, 'width_range_max': 7.0, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.3},
+    {'category': '3б', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 5.0, 'width_range_max': 7.0, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.3},
+   
+    
+    
+    {'category': '3а', 'purpose': 'Нарезные',
+     'width_range_min': 3.5, 'width_range_max': 5.9, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.1},
+    {'category': '3б', 'purpose': 'Нарезные',
+     'width_range_min': 3.5, 'width_range_max': 5.9, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.1},
+    
+    {'category': '3а', 'purpose': 'Нарезные',
+     'width_range_min': 6.0, 'width_range_max': 8.0, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.3}, 
+    {'category': '3б', 'purpose': 'Нарезные',
+     'width_range_min': 6.0, 'width_range_max': 8.0, 'mesh_spacing_a': 0.9, 'mesh_spacing_b': 0.9, 'anchoring_depth': 2.3},
+    
+    {'category': '4', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 3.5, 'width_range_max': 7.0, 'mesh_spacing_a': 0.7, 'mesh_spacing_b': 0.7, 'anchoring_depth': 2.3},
+    {'category': '4а', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 3.5, 'width_range_max': 7.0, 'mesh_spacing_a': 0.7, 'mesh_spacing_b': 0.7, 'anchoring_depth': 2.3},
+    {'category': '4б', 'purpose': 'Горно‑капитальные',
+     'width_range_min': 3.5, 'width_range_max': 7.0, 'mesh_spacing_a': 0.7, 'mesh_spacing_b': 0.7, 'anchoring_depth': 2.3},
+    
+    {'category': '4', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 3.5, 'width_range_max': 7.0, 'mesh_spacing_a': 0.7, 'mesh_spacing_b': 0.7, 'anchoring_depth': 2.3},
+    {'category': '4а', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 3.5, 'width_range_max': 7.0, 'mesh_spacing_a': 0.7, 'mesh_spacing_b': 0.7, 'anchoring_depth': 2.3},
+    {'category': '4б', 'purpose': 'Горно‑подготовительные',
+     'width_range_min': 3.5, 'width_range_max': 7.0, 'mesh_spacing_a': 0.7, 'mesh_spacing_b': 0.7, 'anchoring_depth': 2.3},
+    
+    
+    {'category': '4', 'purpose': 'Нарезные',
+     'width_range_min': 3.5, 'width_range_max': 8.0, 'mesh_spacing_a': 0.7, 'mesh_spacing_b': 0.7, 'anchoring_depth': 2.3},
+    {'category': '4а', 'purpose': 'Нарезные',
+     'width_range_min': 3.5, 'width_range_max': 8.0, 'mesh_spacing_a': 0.7, 'mesh_spacing_b': 0.7, 'anchoring_depth': 2.3},
+    {'category': '4б', 'purpose': 'Нарезные',
+     'width_range_min': 3.5, 'width_range_max': 8.0, 'mesh_spacing_a': 0.7, 'mesh_spacing_b': 0.7, 'anchoring_depth': 2.3},
+]
+
+data_krep = [
+    {'Unnamed: 0': 'Максимально ненарушенный массив', 'Q': 1,
+     'Временной крепи': 'Без крепления', 'Отставание временной крепи, м': '-',
+     'Постоянной крепи': 'Без крепления', 'Отставание постоянной крепи, м': '-'},
+    {'Unnamed: 0': 'Максимально ненарушенный массив', 'Q': 1,
+     'Временной крепи': 'Без крепления', 'Отставание временной крепи, м': '-',
+     'Постоянной крепи': 'Без крепления', 'Отставание постоянной крепи, м': '-'},
+    {'Unnamed: 0': 'Крайне ненарушенный массив', 'Q': '1а',
+     'Временной крепи': 'Без крепления', 'Отставание временной крепи, м': '-',
+     'Постоянной крепи': '1. Торкрет-бетон (набрызг-бетон) толщиной до 0,03 м по кровле.\n2. СПА, ПА, ФА, ГРА, АКц  по кровле.',
+     'Отставание постоянной крепи, м': 30},
+    {'Unnamed: 0': 'Очень ненарушенный массив', 'Q': '1б',
+     'Временной крепи': 'Без крепления', 'Отставание временной крепи, м': '-',
+     'Постоянной крепи': '1. СПА, ПА, ФА, ГРА, АКц  по кровле. Торкрет-бетон (набрызг-бетон) толщиной до 3 см по кровле.',
+     'Отставание постоянной крепи, м': 30},
+    {'Unnamed: 0': 'Ненарушенный массив', 'Q': '2а',
+     'Временной крепи': '1. СПА, ПА, ФА, ГРА по кровле. \n2. АКц по кровле с шагом 0,9×0,9 м.',
+     'Отставание временной крепи, м': '1. Шаг анкерования\n2. 0,9',
+     'Постоянной крепи': '1. СПА, ПА, ФА, ГРА  по кровле. Торкрет-бетон (набрызг-бетон) толщиной не менее 3 см по кровле и бокам.\n2. АКц по кровле с шагом 0,9×0,9 м. Торкрет-бетон (набрызг-бетон) толщиной не менее 3 см по кровле и бокам.',
+     'Отставание постоянной крепи, м': 'Торкрет-бетон (набрызг-бетон) – 25,0 (30,0)*'},
+    {'Unnamed: 0': 'Массив средней нарушенности', 'Q': '2б',
+     'Временной крепи': '1. СПА, ПА, ФА, ГРА  по кровле и бокам.\n2. АКц по кровле и бокам с шагом 0,8×0,8 м.',
+     'Отставание временной крепи, м': '1. Шаг анкерования\n2. 0,8',
+     'Постоянной крепи': '1. СПА, ПА, ФА, ГРА  по кровле и по бокам. Торкрет-бетон (набрызг-бетон) толщиной 3÷4 см по кровле и бокам.\n2. АКц по кровле и бокам с шагом 0,8×0,8 м. Торкрет-бетон (набрызг-бетон), толщиной 3÷4 см по кровле и бокам.',
+     'Отставание постоянной крепи, м': 'Торкрет-бетон (набрызг-бетон) – 25,0 (30,0)*'},
+    {'Unnamed: 0': 'Нарушенный массив', 'Q': '3а',
+     'Временной крепи': '1. СПА, СЗПА, ПА, ФА, ГРА  по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной не менее 2 см.\n2. ФА,  по кровле и бокам. Армокаркас 0,95×0,95 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной не менее 2 см.\n3. АКц по кровле и бокам с шагом 0,7×0,7 м. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной не менее 2 см.',
+     'Отставание временной крепи, м': '1. Анкера– Шаг анкерования\nТоркрет-бетон (набрызг-бетон) кровля и бока - 5,0\n2. Анкера, армокаркас – 0,9 \nТоркрет-бетон (набрызг-бетон) кровля и бока - 5,0\n3. Анкера- 0,7\nТоркрет-бетон (набрызг-бетон) кровля и бока - 5,0',
+     'Постоянной крепи': '1. СПА, СЗПА, ПА, ФА, ГРА  по кровле и бокам. Металлическая сетка с ячеей 0,1÷0,2 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной 3÷5 см (металлическую сетку и набрызг-бетон допускается заменять на фибробетон толщиной не менее 6 см).\n2. ФА  по кровле и бокам. Армокаркас 0,95×0,95 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной 7 см.\n3. АКц по кровле и бокам с шагом 0,7×0,7 м. Металлическая сетка с ячеей 0,1÷0,2 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной 3÷5 см (металлическую сетку и набрызг-бетон допускается заменять на фибробетон толщиной не менее 6 см).',
+     'Отставание постоянной крепи, м': 'Металлическая сетка – 15,0 (30,0)*'},
+    {'Unnamed: 0': 'Очень ненарушенный массив', 'Q': '3б',
+     'Временной крепи': '1. СПА, СЗПА, ПА, ФА, ГРА  по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной не менее 2 см.\n2. ФА  по кровле и бокам. Армокаркас 0,95×0,95 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной не менее 2 см.\n3. АКц с шагом 0,7×0,7 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной не менее 2 см.',
+     'Отставание временной крепи, м': '1. Анкера - Шаг анкерования\nТоркрет-бетон (набрызг-бетон) кровля и бока - 5,0\n2. Анкера и армокаркас - Шаг анкерования \nТоркрет-бетон (набрызг-бетон) кровля и бока - 5,0\n3. Анкера - 0,7 \nТоркрет-бетон (набрызг-бетон) кровля и бока - 5,0',
+     'Постоянной крепи': '1. СПА, СЗПА, ПА, ФА, ГРА  по кровле и бокам. Металлическая сетка с ячеей 0,1÷0,2 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной 5÷7 см (металлическую сетку и набрызг-бетон допускается заменять на фибробетон толщиной не менее 9 см).\n2. ФА по кровле и бокам. Армокаркас 0,95×0,95 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной 7 см.\n3. АКц по кровле и бокам с шагом 0,7×0,7 м. Металлическая сетка с ячеей 0,1÷0,2 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной 5÷7 см (металлическую сетку и набрызг-бетон допускается заменять на фибробетон толщиной не  менее 9 см).',
+     'Отставание постоянной крепи, м': '1. Металлическая сетка – 15,0 (30,0)*\nТоркрет-бетон (набрызг-бетон) – 15,0 (30,0)*\n2. Торкрет-бетон (набрызг-бетон) - 15,0 (30,0)*\n3. Металлическая сетка – 15,0 (30,0)*\nТоркрет-бетон (набрызг-бетон) - 15,0 (30,0)*'},
+    {'Unnamed: 0': 'Крайне нарушенный массив', 'Q': '4а',
+     'Временной крепи': '1. СПА, СЗПА  по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной не менее 5 см.\n2. ФА с шагом 0,7×0,7 м по кровле и бокам. Армокаркас 0,95×0,95 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной не менее 5 см.\n3. Арочная податливая крепь - рамы СВП 22, 27, 33 (принимать в зависимости от ширины выработки), через 0,5÷1,0 м. Опережающая крепь с упрочнением массива (проколоты), длиной 2,0÷6,0 м с шагом 0,5÷0,7 м.\n4. Арочная податливая крепь - рамы СВП 22, 27, 33 (принимать в зависимости от ширины выработки), через 0,5÷1,0 м.',
+     'Отставание временной крепи, м': '1. Анкера, армокаркас (для ФА),– Шаг анкерования\nТоркрет-бетон (набрызг-бетон) кровля и бока - 5,0 (при пересечении участков метаморфизованных, гигроскопичных пород - без отставания)\n2. Анкера, армокаркас (для ФА),– Шаг анкерования\nТоркрет-бетон (набрызг-бетон) кровля и бока - 5,0 (при пересечении участков метаморфизованных, гигроскопичных пород - без отставания)\n3. 0,5÷1,0\n4. 0,5÷1,0',
+     'Постоянной крепи': '1. СПА, СЗПА по кровле и бокам. Металлическая сетка с ячеей 0,1÷0,2 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной 7÷11 см (металлическую сетку и набрызг-бетон допускается заменять на фибробетон толщиной не менее 12 см).\n2. ФА по кровле и бокам с шагом 0,7×0,7 м. Армокаркас 0,95×0,95 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной 0,07÷0,11 м.\n3. Арочная податливая крепь - рамы СВП 22, 27, 33 (принимать в зависимости от ширины выработки), через 0,5÷1,0 м.\n4. Арочная податливая крепь - рамы СВП 22, 27, 33 (принимать в зависимости от ширины выработки), через 0,5÷1,0 м.',
+     'Отставание постоянной крепи, м': '1. Металлическая сетка – 10,0 (10)*\nТоркрет-бетон (набрызг-бетон) – 10,0 (10,0)*\n2. Торкрет-бетон (набрызг-бетон) - 10,0 (10,0)*\n3. 0,5÷1,0\n4. 0,5÷1,0'},
+    {'Unnamed: 0': 'Исключительно нарушенный массив', 'Q': '4б',
+     'Временной крепи': '1. ФА  м по кровле и бокам. Армокаркас (для ФА) 0,95×0,95 м по кровле и бокам. Торкрет-бетон (набрызг-бетон) по кровле и бокам толщиной не менее 5 см.\n2. Арочная податливая крепь - рамы СВП 22, 27, 33 (принимать в зависимости от ширины выработки), через 0,5÷1,0 м.',
+     'Отставание временной крепи, м': '1. Анкера, армокаркас - 0,7. Торкрет-бетон (набрызг-бетон) кровля и бока - 5,0 (при пересечении участков метаморфизованных, гигроскопичных пород - без отставания)\n2. 0,5÷1,0',
+     'Постоянной крепи': '1. Бетонная (железобетонная) крепь. Толщина бетона не менее 0,2 м.\n2. Бетонная (набрызг-бетонная) крепь.',
+     'Отставание постоянной крепи, м': '1. 15,0 (10,0)\n2. 10'},
+]
+
+df_mesh = pd.DataFrame(data_mesh)
+df_krep = pd.DataFrame(data_krep)
+df_krep['Q'] = df_krep['Q'].astype(str).str.strip()
+
+REQUIRED_FIELDS = {
+    'name':     'Название выработки',
+    'purpose':  'Назначение (тип) выработки',
+    'category': 'Категория нарушенности',
+    'width':    'Ширина выработки, м',
+}
+
+
+# ---------------------------------------------------------------------------
+#  ЛОГИКА РАСЧЁТА
+# ---------------------------------------------------------------------------
+
+def find_anchoring_params(purpose, category, width):
+    filtered = df_mesh[
+        (df_mesh['category'] == category) &
+        (df_mesh['purpose'].str.contains(str(purpose), na=False))
+    ]
+    for _, row in filtered.iterrows():
+        if row['width_range_min'] <= width <= row['width_range_max']:
+            return {
+                'step_anchoring': f"{row['mesh_spacing_a']}×{row['mesh_spacing_b']} м",
+                'anchoring_depth': row['anchoring_depth'],
+            }
+    return None
+
+
+def find_support_params(category):
+    row = df_krep[df_krep['Q'] == str(category).strip()]
+    if not row.empty:
+        return {
+            'temp_support': row['Временной крепи'].iloc[0],
+            'temp_support_lag': row['Отставание временной крепи, м'].iloc[0],
+            'perm_support': row['Постоянной крепи'].iloc[0],
+            'perm_support_lag': row['Отставание постоянной крепи, м'].iloc[0],
+        }
+    return None
+
+
+def process_mine_workings(input_df):
+    """Колонки input_df: name / purpose / category / width.
+    В результат добавлен столбец «Категория» из исходных данных."""
+    results = []
+    for _, row in input_df.iterrows():
+        try:
+            width = float(str(row['width']).replace(',', '.'))
+        except (ValueError, TypeError):
+            width = None
+
+        anchoring_params = (
+            find_anchoring_params(row['purpose'], row['category'], width)
+            if width is not None else None
+        )
+        support_params = find_support_params(row['category'])
+
+        results.append({
+            'Название выработки': row['name'],
+            'Категория': row['category'],  # <-- добавленный столбец из исходного датафрейма
+            'Параметры временного крепления': support_params['temp_support'] if support_params else 'Не найдено',
+            'Глубина анкерования, м': anchoring_params['anchoring_depth'] if anchoring_params else 'Не найдено',
+            'Шаг анкерования': anchoring_params['step_anchoring'] if anchoring_params else 'Не найдено',
+            'Отставание временной крепи, м': support_params['temp_support_lag'] if support_params else 'Не найдено',
+            'Параметры постоянного крепления': support_params['perm_support'] if support_params else 'Не найдено',
+            'Отставание постоянного крепления, м': support_params['perm_support_lag'] if support_params else 'Не найдено',
+        })
+    return pd.DataFrame(results)
+
+
+def read_dataframe(file_bytes, fmt, csv_sep=',', csv_encoding='utf-8'):
+    fmt = fmt.lower()
+    bio = io.BytesIO(file_bytes)
+    if fmt == 'csv':
+        sep = '\t' if csv_sep in ('\\t', 'tab', 'таб') else csv_sep
+        return pd.read_csv(bio, sep=sep, encoding=csv_encoding)
+    if fmt in ('excel', 'xlsx', 'xls'):
+        return pd.read_excel(bio)
+    if fmt == 'json':
+        return pd.read_json(bio)
+    raise ValueError(f'Неподдерживаемый формат: {fmt}')
+
+
+def build_excel(result_df):
+    """Возвращает BytesIO с .xlsx (перенос текста + автоширина колонок)."""
+    bio = io.BytesIO()
+    with pd.ExcelWriter(bio, engine='openpyxl') as writer:
+        result_df.to_excel(writer, index=False, sheet_name='Крепление')
+        ws = writer.sheets['Крепление']
+        for col_cells in ws.columns:
+            letter = col_cells[0].column_letter
+            max_len = 0
+            for cell in col_cells:
+                if cell.value is not None:
+                    longest = max((len(s) for s in str(cell.value).split('\n')), default=0)
+                    max_len = max(max_len, longest)
+                    cell.alignment = cell.alignment.copy(wrap_text=True, vertical='top')
+            ws.column_dimensions[letter].width = min(max_len + 2, 60)
+    bio.seek(0)
+    return bio
+
+
+def auto_match(columns):
+    cols_lower = {str(c).lower().strip(): c for c in columns}
+    aliases = {
+        'name':     ['name', 'название', 'название выработки', 'выработка', 'наименование'],
+        'purpose':  ['purpose', 'назначение', 'тип', 'назначение выработки'],
+        'category': ['category', 'категория', 'категория нарушенности', 'q'],
+        'width':    ['width', 'ширина', 'ширина выработки', 'ширина, м'],
+    }
+    out = {}
+    for key, names in aliases.items():
+        for n in names:
+            if n in cols_lower:
+                out[key] = cols_lower[n]
+                break
+    return out
+
+
+# ---------------------------------------------------------------------------
+#  WEB-ПРИЛОЖЕНИЕ
+# ---------------------------------------------------------------------------
+
+app = Flask(__name__)
+app.config['MAX_CONTENT_LENGTH'] = 64 * 1024 * 1024  # до 64 МБ
+
+# хранилище загруженных датафреймов (локальное однопользовательское приложение)
+SESSIONS = {}
+
+
+@app.route('/')
+def index():
+    return Response(INDEX_HTML, mimetype='text/html')
+
+
+@app.route('/upload', methods=['POST'])
+def upload():
+    f = request.files.get('file')
+    if f is None:
+        return jsonify({'error': 'Файл не передан'}), 400
+    fmt = request.form.get('fmt', 'csv')
+    csv_sep = request.form.get('sep', ',')
+    csv_enc = request.form.get('enc', 'utf-8')
+    try:
+        df = read_dataframe(f.read(), fmt, csv_sep=csv_sep, csv_encoding=csv_enc)
+    except Exception as e:
+        return jsonify({'error': f'Не удалось прочитать файл: {e}'}), 400
+
+    token = os.urandom(8).hex()
+    SESSIONS[token] = df
+    columns = [str(c) for c in df.columns]
+    preview = df.head(8).astype(str).values.tolist()
+    return jsonify({
+        'token': token,
+        'columns': columns,
+        'nrows': int(len(df)),
+        'preview': preview,
+        'auto': auto_match(columns),
+    })
+
+
+@app.route('/process', methods=['POST'])
+def process():
+    data = request.get_json(force=True)
+    token = data.get('token')
+    mapping = data.get('mapping', {})
+    filename = (data.get('filename') or 'результат_крепления').strip()
+    if not filename.lower().endswith('.xlsx'):
+        filename += '.xlsx'
+
+    df = SESSIONS.get(token)
+    if df is None:
+        return jsonify({'error': 'Данные не загружены. Сначала загрузите файл.'}), 400
+
+    missing = [REQUIRED_FIELDS[k] for k in REQUIRED_FIELDS if not mapping.get(k)]
+    if missing:
+        return jsonify({'error': 'Не сопоставлены поля: ' + ', '.join(missing)}), 400
+
+    try:
+        input_df = pd.DataFrame({
+            'name':     df[mapping['name']],
+            'purpose':  df[mapping['purpose']],
+            'category': df[mapping['category']].astype(str).str.strip(),
+            'width':    df[mapping['width']],
+        })
+        result_df = process_mine_workings(input_df)
+        bio = build_excel(result_df)
+    except KeyError as e:
+        return jsonify({'error': f'Столбец не найден: {e}'}), 400
+    except Exception as e:
+        return jsonify({'error': f'Ошибка обработки: {e}'}), 500
+
+    return send_file(
+        bio,
+        as_attachment=True,
+        download_name=filename,
+        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    )
+
+
+# ---------------------------------------------------------------------------
+#  HTML (встроен, чтобы упаковываться в один .exe без доп. файлов)
+# ---------------------------------------------------------------------------
+
+INDEX_HTML = r"""<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Расчёт параметров крепления выработок</title>
+<style>
+  :root{--bg:#0f172a;--card:#ffffff;--line:#e2e8f0;--ink:#1e293b;--muted:#64748b;
+        --accent:#2563eb;--accent2:#1d4ed8;--ok:#16a34a;--bad:#dc2626;}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:"Segoe UI",system-ui,Arial,sans-serif;color:var(--ink);
+       background:linear-gradient(160deg,#1e293b,#0f172a);min-height:100vh;padding:24px}
+  .wrap{max-width:960px;margin:0 auto}
+  h1{color:#f1f5f9;font-size:22px;margin:0 0 4px}
+  .sub{color:#94a3b8;font-size:13px;margin:0 0 20px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;
+        padding:18px 20px;margin-bottom:16px;box-shadow:0 8px 24px rgba(0,0,0,.18)}
+  .card h2{font-size:15px;margin:0 0 14px;display:flex;align-items:center;gap:8px}
+  .num{display:inline-flex;width:24px;height:24px;border-radius:50%;background:var(--accent);
+       color:#fff;align-items:center;justify-content:center;font-size:13px;font-weight:700}
+  label{font-size:13px;color:var(--muted);display:block;margin:0 0 4px}
+  .row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end}
+  .row > div{flex:1;min-width:170px}
+  input,select{width:100%;padding:9px 10px;border:1px solid var(--line);border-radius:8px;
+               font-size:14px;background:#fff;color:var(--ink)}
+  input[type=file]{padding:6px}
+  button{cursor:pointer;border:0;border-radius:8px;padding:10px 16px;font-size:14px;
+         font-weight:600;background:var(--accent);color:#fff;transition:.15s}
+  button:hover{background:var(--accent2)}
+  button.sec{background:#f1f5f9;color:var(--ink);border:1px solid var(--line)}
+  button.sec:hover{background:#e2e8f0}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .map-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .hint{color:var(--muted);font-size:12px;margin:0 0 10px}
+  #log{background:#0b1220;color:#cbd5e1;border-radius:8px;padding:10px 12px;font-family:
+       Consolas,monospace;font-size:12px;white-space:pre-wrap;max-height:150px;overflow:auto}
+  table{border-collapse:collapse;width:100%;font-size:12px}
+  th,td{border:1px solid var(--line);padding:6px 8px;text-align:left;max-width:220px;
+        overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  th{background:#f8fafc;position:sticky;top:0}
+  .tbl-wrap{overflow:auto;max-height:280px;border:1px solid var(--line);border-radius:8px}
+  .pill{font-size:11px;color:var(--ok);font-weight:600}
+  .csv-only{display:flex;gap:12px;margin-top:10px}
+  .big{width:100%;padding:13px;font-size:15px;margin-top:4px}
+  .err{color:var(--bad);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Расчёт параметров крепления горных выработок</h1>
+  <p class="sub">Загрузите данные о выработках, сопоставьте столбцы и выгрузите результат в Excel.</p>
+
+  <!-- 1. ВХОД -->
+  <div class="card">
+    <h2><span class="num">1</span> Входной файл</h2>
+    <div class="row">
+      <div>
+        <label>Формат (расширение)</label>
+        <select id="fmt">
+          <option value="csv">CSV (*.csv)</option>
+          <option value="excel">Excel (*.xlsx, *.xls)</option>
+          <option value="json">JSON (*.json)</option>
+        </select>
+      </div>
+      <div style="flex:2">
+        <label>Файл</label>
+        <input type="file" id="file">
+      </div>
+    </div>
+    <div class="csv-only" id="csvOpts">
+      <div><label>Разделитель</label>
+        <select id="sep"><option>,</option><option>;</option><option>\t</option><option>|</option></select></div>
+      <div><label>Кодировка</label>
+        <select id="enc"><option>utf-8</option><option>cp1251</option><option>utf-8-sig</option></select></div>
+    </div>
+    <div style="margin-top:12px">
+      <button id="loadBtn">Загрузить и прочитать столбцы</button>
+      <span id="loadInfo" class="pill"></span>
+    </div>
+  </div>
+
+  <!-- 2. СОПОСТАВЛЕНИЕ -->
+  <div class="card">
+    <h2><span class="num">2</span> Сопоставление столбцов</h2>
+    <p class="hint">Укажите, какой столбец входного файла соответствует каждому требуемому полю.</p>
+    <div class="map-grid" id="mapGrid">
+      <div><label>Название выработки</label><select id="m_name" disabled></select></div>
+      <div><label>Назначение (тип)</label><select id="m_purpose" disabled></select></div>
+      <div><label>Категория нарушенности</label><select id="m_category" disabled></select></div>
+      <div><label>Ширина выработки, м</label><select id="m_width" disabled></select></div>
+    </div>
+  </div>
+
+  <!-- 3. ВЫХОД -->
+  <div class="card">
+    <h2><span class="num">3</span> Выходной файл Excel</h2>
+    <div class="row">
+      <div style="flex:2">
+        <label>Имя файла для сохранения</label>
+        <input type="text" id="outName" value="результат_крепления.xlsx">
+      </div>
+    </div>
+    <p class="hint">Файл скачается браузером в папку загрузок (там можно выбрать место сохранения, если включён запрос пути).</p>
+    <button id="runBtn" class="big" disabled>▶ Обработать и скачать Excel</button>
+    <p id="err" class="err"></p>
+  </div>
+
+  <!-- ПРЕДПРОСМОТР / ЛОГ -->
+  <div class="card">
+    <h2>Предпросмотр данных</h2>
+    <div class="tbl-wrap"><table id="prev"></table></div>
+    <div style="margin-top:12px"><div id="log">Готов к работе.</div></div>
+  </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+let TOKEN = null;
+
+function logln(t){ const l=$('log'); l.textContent += "\n"+t; l.scrollTop=l.scrollHeight; }
+function setErr(t){ $('err').textContent = t||''; }
+
+$('fmt').addEventListener('change', ()=>{
+  $('csvOpts').style.display = $('fmt').value==='csv' ? 'flex' : 'none';
+});
+
+$('loadBtn').addEventListener('click', async ()=>{
+  setErr('');
+  const f = $('file').files[0];
+  if(!f){ setErr('Выберите файл.'); return; }
+  const fd = new FormData();
+  fd.append('file', f);
+  fd.append('fmt', $('fmt').value);
+  fd.append('sep', $('sep').value);
+  fd.append('enc', $('enc').value);
+  $('loadBtn').disabled = true; $('loadInfo').textContent='загрузка…';
+  try{
+    const r = await fetch('/upload', {method:'POST', body:fd});
+    const d = await r.json();
+    if(!r.ok){ throw new Error(d.error||'Ошибка загрузки'); }
+    TOKEN = d.token;
+    fillMappings(d.columns, d.auto||{});
+    fillPreview(d.columns, d.preview);
+    $('runBtn').disabled = false;
+    $('loadInfo').textContent = '✓ строк: '+d.nrows+', столбцов: '+d.columns.length;
+    logln('Файл загружен: '+f.name+' — строк '+d.nrows+', столбцов '+d.columns.length);
+    logln('Столбцы: '+d.columns.join(', '));
+  }catch(e){ setErr(e.message); logln('[ОШИБКА] '+e.message); }
+  finally{ $('loadBtn').disabled = false; }
+});
+
+function fillMappings(cols, auto){
+  ['name','purpose','category','width'].forEach(k=>{
+    const sel = $('m_'+k); sel.innerHTML=''; sel.disabled=false;
+    const empty=document.createElement('option'); empty.value=''; empty.textContent='— выберите столбец —';
+    sel.appendChild(empty);
+    cols.forEach(c=>{ const o=document.createElement('option'); o.value=c; o.textContent=c; sel.appendChild(o); });
+    if(auto[k]) sel.value = auto[k];
+  });
+}
+
+function fillPreview(cols, rows){
+  const t = $('prev'); t.innerHTML='';
+  const thead=document.createElement('tr');
+  cols.forEach(c=>{ const th=document.createElement('th'); th.textContent=c; thead.appendChild(th); });
+  t.appendChild(thead);
+  rows.forEach(r=>{ const tr=document.createElement('tr');
+    r.forEach(v=>{ const td=document.createElement('td'); td.textContent=v; td.title=v; tr.appendChild(td); });
+    t.appendChild(tr); });
+}
+
+$('runBtn').addEventListener('click', async ()=>{
+  setErr('');
+  const mapping = {
+    name:$('m_name').value, purpose:$('m_purpose').value,
+    category:$('m_category').value, width:$('m_width').value
+  };
+  for(const k in mapping){ if(!mapping[k]){ setErr('Сопоставьте все четыре поля.'); return; } }
+  $('runBtn').disabled = true;
+  try{
+    const r = await fetch('/process', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({token:TOKEN, mapping, filename:$('outName').value})
+    });
+    if(!r.ok){ const d=await r.json(); throw new Error(d.error||'Ошибка обработки'); }
+    const blob = await r.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href=url; a.download = $('outName').value || 'результат_крепления.xlsx';
+    document.body.appendChild(a); a.click(); a.remove(); URL.revokeObjectURL(url);
+    logln('Готово. Файл сформирован и скачан: '+a.download);
+  }catch(e){ setErr(e.message); logln('[ОШИБКА] '+e.message); }
+  finally{ $('runBtn').disabled = false; }
+});
+</script>
+</body>
+</html>
+"""
+
+
+# ---------------------------------------------------------------------------
+#  ЗАПУСК СЕРВЕРА + АВТО-ОТКРЫТИЕ БРАУЗЕРА
+# ---------------------------------------------------------------------------
+
+def _free_port(preferred=5000):
+    for p in (preferred, 5001, 5050, 8080, 0):
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind(('127.0.0.1', p))
+            port = s.getsockname()[1]
+            s.close()
+            return port
+        except OSError:
+            continue
+    return preferred
+
+
+def main():
+    port = _free_port(5000)
+    url = f'http://127.0.0.1:{port}/'
+    # открыть браузер чуть позже, когда сервер поднимется
+    threading.Timer(1.0, lambda: webbrowser.open(url)).start()
+    print('=' * 56)
+    print('  Расчёт параметров крепления — приложение запущено')
+    print(f'  Откройте в браузере: {url}')
+    print('  Чтобы остановить — закройте это окно.')
+    print('=' * 56)
+    # use_reloader=False обязателен для упаковки в exe
+    app.run(host='127.0.0.1', port=port, debug=False, use_reloader=False, threaded=True)
+
+
+if __name__ == '__main__':
+    main()
