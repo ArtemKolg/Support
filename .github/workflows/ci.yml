@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Check imports and reference data
+        run: |
+          uv run python - <<'EOF'
+          from krep_app.data import df_mesh, df_krep
+          from krep_app.calc import find_anchoring_params, find_support_params, process_mine_workings
+          from krep_app.server import app
+
+          # Базовые проверки справочных данных
+          assert len(df_mesh) > 0, "df_mesh пуст"
+          assert len(df_krep) > 0, "df_krep пуст"
+
+          # Тест расчёта для известной комбинации
+          result = find_anchoring_params("Горно‑капитальные", "1а", 4.0)
+          assert result is not None, "Не найдены параметры анкерования"
+          assert result["anchoring_depth"] == 1.8
+
+          support = find_support_params("2б")
+          assert support is not None, "Не найдены параметры крепи"
+
+          print("OK: все проверки пройдены")
+          EOF
